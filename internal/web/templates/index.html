@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>光回波事件室</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>光回波事件室</h1>
+  <p class="subtitle">OTDR 轨迹的距离校准 · 分段基线 · 事件识别 · 累积损耗与跨轨迹对应复核</p>
+</header>
+
+{{if .Notice}}
+<div class="notice">{{.Notice}}</div>
+{{end}}
+
+<section class="toolbar">
+  <form method="post" action="/runs/export" style="display:inline">
+    <button type="submit">导出运行记录 JSON</button>
+  </form>
+  <form method="post" action="/reimport" style="display:inline"
+        onsubmit="return confirm('清空数据库并重新导入固定夹具？当前判定与对应将被清除。');">
+    <button type="submit" class="danger">清空数据库并重新导入复核</button>
+  </form>
+  <span class="hint">采样索引是事件身份；米制距离仅为当前折射率下的校准结果。</span>
+</section>
+
+<section class="card">
+  <h2>距离校准对齐</h2>
+  <p class="hint">两条轨迹画在同一米制坐标轴上。圆点为实事件、空心圆为幽灵候选；<b>只有下方显式确认的对应才会用绿虚线连接</b>，
+  系统不会因为峰看起来相近就自动当成同一设施。</p>
+  {{if .HasPair}}
+  {{overlaySVG .Pair}}
+  {{end}}
+
+  <h3>已确认的跨轨迹对应</h3>
+  {{if .Links}}
+  <table class="grid">
+    <tr><th>ID</th><th>轨迹 A</th><th>锚点(采样索引)</th><th>轨迹 B</th><th>锚点(采样索引)</th><th>操作</th></tr>
+    {{range .Links}}
+    <tr>
+      <td>{{.ID}}</td>
+      <td>{{.TraceA}}</td><td>#{{.AnchorA}}</td>
+      <td>{{.TraceB}}</td><td>#{{.AnchorB}}</td>
+      <td>
+        <form method="post" action="/links/delete" style="display:inline">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button class="mini" type="submit">取消对应</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </table>
+  {{else}}
+  <p class="hint">尚无人工确认的对应。请在下方事件表中分别选择两条轨迹的锚点后确认。</p>
+  {{end}}
+
+  <form method="post" action="/links" class="linkform">
+    <label>轨迹 A
+      <select name="trace_a">{{range .Traces}}<option value="{{.Row.ID}}">{{.Row.Code}}</option>{{end}}</select>
+    </label>
+    <label>事件锚点 A（采样索引）
+      <input name="anchor_a" required placeholder="如 293">
+    </label>
+    <label>轨迹 B
+      <select name="trace_b">{{range .Traces}}<option value="{{.Row.ID}}">{{.Row.Code}}</option>{{end}}</select>
+    </label>
+    <label>事件锚点 B（采样索引）
+      <input name="anchor_b" required placeholder="如 244">
+    </label>
+    <button type="submit">确认两事件为同一设施</button>
+  </form>
+</section>
+
+{{range .Traces}}
+{{$tv := .}}
+<section class="card trace-card" id="trace-{{.Row.ID}}">
+  <h2>{{.Row.Code}} · {{.Row.Name}}</h2>
+  <div class="meta">
+    <span>脉宽 {{.Row.Params.PulseWidthNS}}ns</span>
+    <span>群折射率 n=<b>{{.Row.Params.GroupIndex}}</b></span>
+    <span>平均次数 {{.Row.Params.AvgCount}}</span>
+    <span>采样间隔 {{.Row.Params.SampleInterval}}ns</span>
+    <span>参数修订 rev={{.Row.Rev}}</span>
+    <span>原始样本数 {{.Interp.SampleCount}}</span>
+  </div>
+
+  <div class="controls">
+    <form method="post" action="/traces/{{.Row.ID}}/group-index" class="inline">
+      <label>修改群折射率
+        <input name="group_index" type="number" step="0.0001" min="1.0001"
+               value="{{.Row.Params.GroupIndex}}" required>
+      </label>
+      <button type="submit">重新校准对齐</button>
+    </form>
+    <form method="post" action="/traces/{{.Row.ID}}/deadzone" class="inline">
+      <label>发射端死区（米）
+        <input name="deadzone_m" type="number" step="1" min="0"
+               value="{{.Row.Params.LaunchDeadzone}}" required>
+      </label>
+      <button type="submit">更新死区并重算</button>
+    </form>
+  </div>
+
+  {{traceSVG .Interp}}
+
+  <h3>事件候选（锚点采样索引即身份；距离随折射率重算）</h3>
+  <table class="grid events">
+    <tr>
+      <th>锚点#</th><th>窗（样本）</th><th>距离 m</th><th>类别</th>
+      <th>台阶 dB</th><th>峰高 dB</th><th>幽灵父锚点/距离比</th><th>证据</th><th>操作</th>
+    </tr>
+    {{range .Events}}
+    <tr class="kind-{{.Event.Kind}}">
+      <td>#{{.Event.AnchorIndex}}</td>
+      <td>[{{.Event.StartIndex}}, {{.Event.EndIndex}}]</td>
+      <td>{{printf "%.1f" .Event.DistanceM}}</td>
+      <td>{{.Label}}{{if .Verdict}} <em>({{.Verdict}})</em>{{end}}</td>
+      <td>{{if .Event.LossDB}}{{printf "%.3f" .Event.LossDB}}{{else}}—{{end}}</td>
+      <td>{{if .Event.SpikeDB}}{{printf "%.2f" .Event.SpikeDB}}{{else}}—{{end}}</td>
+      <td>
+        {{if eq (printf "%s" .Event.Kind) "ghost"}}
+          #{{.Event.ParentIndex}} → 比 {{printf "%.2f" .Event.Ratio}}
+        {{else}}—{{end}}
+      </td>
+      <td class="evidence">{{.Event.Evidence}}</td>
+      <td class="ops">
+        {{if or (eq (printf "%s" .Event.Kind) "reflection") (eq (printf "%s" .Event.Kind) "ghost")}}
+        <form method="post" action="/traces/{{$tv.Row.ID}}/ghost" class="inline">
+          <input type="hidden" name="anchor" value="{{.Event.AnchorIndex}}">
+          <input type="hidden" name="rev" value="{{$tv.Interp.Rev}}">
+          <label class="mini">父反射#
+            <input name="parent" style="width:5em" required placeholder="如 293">
+          </label>
+          <button class="mini" type="submit">判为幽灵</button>
+        </form>
+        {{if eq (printf "%s" .Event.Kind) "ghost"}}
+        <form method="post" action="/traces/{{$tv.Row.ID}}/reject-ghost" class="inline">
+          <input type="hidden" name="anchor" value="{{.Event.AnchorIndex}}">
+          <input type="hidden" name="rev" value="{{$tv.Interp.Rev}}">
+          <button class="mini" type="submit">否决幽灵</button>
+        </form>
+        {{end}}
+        {{else}}—{{end}}
+      </td>
+    </tr>
+    {{end}}
+  </table>
+
+  <div class="lower-bound">
+    {{if .Interp.LowerBoundM}}
+    轨迹在 <b>{{printf "%.1f" .Interp.LowerBoundM}}m</b> 处截断：只能声明已测长度下界，不伪造光纤末端。
+    {{else}}未检出截断。{{end}}
+    累计事件损耗合计 <b>{{printf "%.3f" .Interp.TotalLossDB}} dB</b>（重叠事件窗取并集，只计一次）。
+  </div>
+</section>
+{{end}}
+
+<footer class="foot">
+  数据口径：samples 为不可变线性采样；参数修订仅生成新 rev；解释快照保留距离换算、
+  基线拐点、事件区间与证据。重放：<code>go test ./... -count=1 &amp;&amp; go run ./cmd/server --listen 127.0.0.1:5540</code>
+</footer>
+</body>
+</html>
